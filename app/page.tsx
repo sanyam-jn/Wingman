@@ -4,12 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppSettings,
   ChatMessage,
+  MeetingContext,
   SessionExport,
   Suggestion,
   SuggestionBatch,
   TranscriptSegment,
 } from "@/lib/types";
-import { DEFAULT_SETTINGS } from "@/lib/defaults";
+import { DEFAULT_SETTINGS, MEETING_CONTEXT_BADGE_COLORS } from "@/lib/defaults";
+import { buildSuggestionContext, getWhisperPrompt } from "@/lib/textUtils";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import MicPanel from "@/components/MicPanel";
 import SuggestionsPanel from "@/components/SuggestionsPanel";
@@ -20,76 +22,126 @@ function randomId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-
 interface Toast {
   id: string;
   message: string;
-  type: "error" | "info";
+}
+
+// ── Helpers for suggestion lookup ─────────────────────────────────────────────
+
+function findSuggestionById(batches: SuggestionBatch[], id: string): Suggestion | undefined {
+  for (const batch of batches) {
+    const s = batch.suggestions.find((s) => s.id === id);
+    if (s) return s;
+  }
+  return undefined;
+}
+
+// ── Streaming chat helper ─────────────────────────────────────────────────────
+
+async function streamChatResponse(params: {
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  transcriptContext: string;
+  apiKey: string;
+  systemPrompt: string;
+  model: string;
+  threadContext?: {
+    suggestionType: Suggestion["type"];
+    suggestionTitle: string;
+    suggestionPreview: string;
+  };
+  onDelta: (accumulated: string) => void;
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: params.messages,
+      transcriptContext: params.transcriptContext,
+      apiKey: params.apiKey,
+      systemPrompt: params.systemPrompt,
+      model: params.model,
+      threadContext: params.threadContext,
+    }),
+  });
+
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => "Unknown error");
+    params.onError(errText);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulated = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    accumulated += decoder.decode(value, { stream: true });
+    params.onDelta(accumulated);
+  }
+  params.onDone();
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  // ── Settings: start with defaults to avoid SSR/client hydration mismatch.
-  // Load from localStorage in useEffect (client-only).
+  // ── Settings (hydration-safe: start with defaults, load from localStorage in useEffect)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
-  // Load from localStorage once on mount (client only)
   useEffect(() => {
     try {
       const raw = localStorage.getItem("twinmind-settings");
       if (raw) {
         const parsed = JSON.parse(raw);
-        // Migrate away from old/unavailable model IDs
         const BAD_MODELS = ["meta-llama/llama-4-maverick-17b-128e-instruct"];
-        if (BAD_MODELS.includes(parsed.llmModel)) {
-          parsed.llmModel = DEFAULT_SETTINGS.llmModel;
-        }
+        if (BAD_MODELS.includes(parsed.llmModel)) parsed.llmModel = DEFAULT_SETTINGS.llmModel;
         setSettings({ ...DEFAULT_SETTINGS, ...parsed });
       }
     } catch {}
     setSettingsLoaded(true);
   }, []);
 
-  // Persist to localStorage whenever settings change (after initial load)
   useEffect(() => {
     if (!settingsLoaded) return;
     localStorage.setItem("twinmind-settings", JSON.stringify(settings));
   }, [settings, settingsLoaded]);
 
-  // Open settings if no API key (after loading)
   useEffect(() => {
     if (settingsLoaded && !settings.groqApiKey) setShowSettings(true);
   }, [settingsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Toasts ────────────────────────────────────────────────────────────────────
+  // ── Toasts ─────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<Toast[]>([]);
-
-  const showToast = useCallback((message: string, type: Toast["type"] = "error") => {
+  const showToast = useCallback((message: string) => {
     const id = randomId();
-    setToasts((prev) => [...prev, { id, message, type }]);
+    setToasts((prev) => [...prev, { id, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
   }, []);
 
-  // ── Session state ─────────────────────────────────────────────────────────────
+  // ── Session state ──────────────────────────────────────────────────────────
   const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
   const [suggestionBatches, setSuggestionBatches] = useState<SuggestionBatch[]>([]);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
-  const [isStreamingChat, setIsStreamingChat] = useState(false);
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [sessionDuration, setSessionDuration] = useState(0);
 
+  // Meeting context
+  const [meetingContext, setMeetingContext] = useState<MeetingContext | null>(null);
+  const meetingContextRef = useRef<MeetingContext | null>(null);
+  meetingContextRef.current = meetingContext;
+  const detectContextCalledRef = useRef(false);
+
   const transcriptRef = useRef<TranscriptSegment[]>([]);
   transcriptRef.current = transcriptSegments;
-
   const isGeneratingRef = useRef(false);
 
   // Session timer
@@ -99,110 +151,178 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [sessionStartTime]);
 
-  // ── Transcription ─────────────────────────────────────────────────────────────
-  const transcribeChunk = useCallback(async (blob: Blob, mimeType: string): Promise<string> => {
+  // ── Chat state ─────────────────────────────────────────────────────────────
+  // Main chat + per-suggestion threads
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [threads, setThreads] = useState<Record<string, ChatMessage[]>>({});
+  const [activeView, setActiveView] = useState<"main" | string>("main");
+  const [isStreamingChat, setIsStreamingChat] = useState(false);
+
+  const chatMessagesRef = useRef(chatMessages);
+  chatMessagesRef.current = chatMessages;
+
+  // ── Transcription ──────────────────────────────────────────────────────────
+  const transcribeChunk = useCallback(
+    async (blob: Blob, mimeType: string, whisperPrompt?: string): Promise<string> => {
+      const key = settingsRef.current.groqApiKey;
+      if (!key) return "";
+
+      const formData = new FormData();
+      formData.append("audio", blob);
+      formData.append("apiKey", key);
+      formData.append("mimeType", mimeType);
+      formData.append("whisperPrompt", whisperPrompt ?? "");
+
+      const res = await fetch("/api/transcribe", { method: "POST", body: formData });
+      if (!res.ok) {
+        const err = await res.text().catch(() => res.statusText);
+        throw new Error(`Transcription failed: ${err}`);
+      }
+      const data = await res.json();
+      return (data.text as string) || "";
+    },
+    []
+  );
+
+  // ── Meeting context detection ──────────────────────────────────────────────
+  const detectMeetingContext = useCallback(async (segments: TranscriptSegment[]) => {
     const key = settingsRef.current.groqApiKey;
-    if (!key) return "";
-
-    const formData = new FormData();
-    formData.append("audio", blob);
-    formData.append("apiKey", key);
-    formData.append("mimeType", mimeType);
-
-    const res = await fetch("/api/transcribe", { method: "POST", body: formData });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => res.statusText);
-      throw new Error(`Transcription failed: ${errText}`);
-    }
-    const data = await res.json();
-    return (data.text as string) || "";
-  }, []);
-
-  // ── Suggestions ───────────────────────────────────────────────────────────────
-  const generateSuggestions = useCallback(async (segments: TranscriptSegment[]) => {
-    const cfg = settingsRef.current;
-    if (!cfg.groqApiKey || isGeneratingRef.current) return;
-
-    const recent = segments.slice(-cfg.transcriptContextSegments);
-    if (recent.length === 0) return;
-
-    const transcriptText = recent.map((s) => s.text).join("\n\n");
-    isGeneratingRef.current = true;
-    setIsGeneratingSuggestions(true);
-
+    if (!key) return;
     try {
-      const res = await fetch("/api/suggestions", {
+      const res = await fetch("/api/detect-context", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          transcriptText,
-          apiKey: cfg.groqApiKey,
-          systemPrompt: cfg.suggestionPrompt,
-          model: cfg.llmModel,
+          transcriptText: segments.map((s) => s.text).join("\n\n"),
+          apiKey: key,
         }),
       });
+      if (!res.ok) return;
+      const data: MeetingContext = await res.json();
+      setMeetingContext(data);
+      meetingContextRef.current = data;
+    } catch { /* silent — non-critical */ }
+  }, []);
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        showToast(`Suggestions failed: ${err.error ?? res.statusText}`);
-        return;
+  // ── Suggestions ────────────────────────────────────────────────────────────
+  const generateSuggestions = useCallback(
+    async (segments: TranscriptSegment[], context?: MeetingContext | null) => {
+      const cfg = settingsRef.current;
+      if (!cfg.groqApiKey || isGeneratingRef.current) return;
+
+      const recent = segments.slice(-cfg.transcriptContextSegments);
+      if (recent.length === 0) return;
+
+      const transcriptText = buildSuggestionContext(segments, cfg.transcriptContextSegments);
+      isGeneratingRef.current = true;
+      setIsGeneratingSuggestions(true);
+
+      try {
+        const res = await fetch("/api/suggestions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transcriptText,
+            apiKey: cfg.groqApiKey,
+            systemPrompt: cfg.suggestionPrompt,
+            model: cfg.llmModel,
+            meetingContext: context ?? null,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          showToast(`Suggestions failed: ${err.error ?? res.statusText}`);
+          return;
+        }
+
+        const data = await res.json();
+        const rawSuggestions: Array<{
+          type: Suggestion["type"];
+          title: string;
+          preview: string;
+          reason?: string;
+          score?: number;
+        }> = data.suggestions ?? [];
+
+        if (rawSuggestions.length === 0) return;
+
+        const suggestions: Suggestion[] = rawSuggestions.map((s) => ({
+          id: randomId(),
+          type: s.type,
+          title: s.title,
+          preview: s.preview,
+          reason: s.reason,
+          score: s.score,
+          isLoadingAnswer: false,
+        }));
+
+        setSuggestionBatches((prev) => [
+          ...prev,
+          { id: randomId(), suggestions, createdAt: Date.now() },
+        ]);
+      } catch (err) {
+        showToast(`Suggestions error: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        isGeneratingRef.current = false;
+        setIsGeneratingSuggestions(false);
       }
+    },
+    [showToast]
+  );
 
-      const data = await res.json();
-      const rawSuggestions: Array<{ type: Suggestion["type"]; title: string; preview: string }> =
-        data.suggestions ?? [];
-
-      if (rawSuggestions.length === 0) return;
-
-      const suggestions: Suggestion[] = rawSuggestions.map((s) => ({
-        id: randomId(),
-        type: s.type,
-        title: s.title,
-        preview: s.preview,
-        isLoadingAnswer: false,
-      }));
-
-      setSuggestionBatches((prev) => [
-        ...prev,
-        { id: randomId(), suggestions, createdAt: Date.now() },
-      ]);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      showToast(`Suggestions error: ${msg}`);
-    } finally {
-      isGeneratingRef.current = false;
-      setIsGeneratingSuggestions(false);
-    }
-  }, [showToast]);
-
-  // ── Audio chunk handler ───────────────────────────────────────────────────────
+  // ── Audio chunk handler ────────────────────────────────────────────────────
   const handleChunk = useCallback(
     async (blob: Blob, mimeType: string) => {
       if (!settingsRef.current.groqApiKey) return;
-      setIsTranscribing(true);
 
+      // Parallel: kick off suggestions on pre-chunk transcript immediately
+      const preChunkSegments = transcriptRef.current;
+      if (preChunkSegments.length > 0 && !isGeneratingRef.current) {
+        generateSuggestions(preChunkSegments, meetingContextRef.current);
+      }
+
+      setIsTranscribing(true);
       try {
-        const text = await transcribeChunk(blob, mimeType);
+        // Whisper prompt injection from last segment
+        const lastSeg = transcriptRef.current[transcriptRef.current.length - 1];
+        const whisperPrompt = lastSeg ? getWhisperPrompt(lastSeg.text) : "";
+
+        const text = await transcribeChunk(blob, mimeType, whisperPrompt);
         if (!text.trim()) return;
 
         const segment: TranscriptSegment = { id: randomId(), text, timestamp: Date.now() };
         const next = [...transcriptRef.current, segment];
         transcriptRef.current = next;
         setTranscriptSegments(next);
-        generateSuggestions(next);
+
+        // Detect meeting context after 2nd chunk (fire and forget)
+        if (next.length === 2 && !detectContextCalledRef.current) {
+          detectContextCalledRef.current = true;
+          detectMeetingContext(next);
+        }
+
+        // Generate suggestions on updated transcript (only if not already running)
+        if (!isGeneratingRef.current) {
+          generateSuggestions(next, meetingContextRef.current);
+        }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        showToast(`Transcription error: ${msg}`);
+        showToast(`Transcription error: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setIsTranscribing(false);
       }
     },
-    [transcribeChunk, generateSuggestions, showToast]
+    [transcribeChunk, generateSuggestions, detectMeetingContext, showToast]
   );
 
-  // ── Audio recorder ────────────────────────────────────────────────────────────
+  // ── Audio recorder ─────────────────────────────────────────────────────────
   const { isRecording, audioLevel, permissionError, startRecording, stopRecording, flushChunk } =
-    useAudioRecorder({ chunkIntervalMs: settings.chunkIntervalMs, onChunk: handleChunk });
+    useAudioRecorder({
+      chunkIntervalMs: settings.chunkIntervalMs,
+      onChunk: handleChunk,
+      enableVAD: settings.enableVAD,
+      vadSilenceMs: settings.vadSilenceMs,
+    });
 
   const handleToggleRecording = useCallback(async () => {
     if (isRecording) {
@@ -217,26 +337,32 @@ export default function Home() {
     if (isRecording) {
       flushChunk();
     } else if (transcriptRef.current.length > 0) {
-      generateSuggestions(transcriptRef.current);
+      generateSuggestions(transcriptRef.current, meetingContextRef.current);
     }
   }, [isRecording, flushChunk, generateSuggestions]);
 
-  // ── Chat ──────────────────────────────────────────────────────────────────────
-  const chatMessagesRef = useRef(chatMessages);
-  chatMessagesRef.current = chatMessages;
-
-  const sendChatMessage = useCallback(
-    async (userText: string, sourceSuggestionId?: string) => {
+  // ── Generic streaming chat sender ─────────────────────────────────────────
+  const sendMessage = useCallback(
+    async (
+      userText: string,
+      opts: {
+        isThread: boolean;
+        suggestionId?: string;
+        suggestion?: Suggestion;
+      }
+    ) => {
       if (isStreamingChat) return;
+
+      const { isThread, suggestionId, suggestion } = opts;
+      const cfg = settingsRef.current;
 
       const userMsg: ChatMessage = {
         id: randomId(),
         role: "user",
         content: userText,
-        sourceSuggestionId,
+        sourceSuggestionId: suggestionId,
         timestamp: Date.now(),
       };
-
       const assistantMsgId = randomId();
       const assistantMsg: ChatMessage = {
         id: assistantMsgId,
@@ -246,77 +372,100 @@ export default function Home() {
         timestamp: Date.now(),
       };
 
-      setChatMessages((prev) => [...prev, userMsg, assistantMsg]);
+      const setMessages = isThread && suggestionId
+        ? (updater: (prev: ChatMessage[]) => ChatMessage[]) =>
+            setThreads((prev) => ({
+              ...prev,
+              [suggestionId]: updater(prev[suggestionId] ?? []),
+            }))
+        : (updater: (prev: ChatMessage[]) => ChatMessage[]) =>
+            setChatMessages(updater);
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setIsStreamingChat(true);
 
       try {
-        const cfg = settingsRef.current;
         const fullTranscript = transcriptRef.current.map((s) => s.text).join("\n\n");
 
-        // Use ref to get current messages without stale closure
-        const history = [...chatMessagesRef.current, userMsg]
+        // Build history from the right source
+        const currentMessages = isThread && suggestionId
+          ? [...(threads[suggestionId] ?? []), userMsg]
+          : [...chatMessagesRef.current, userMsg];
+
+        const history = currentMessages
           .slice(-cfg.chatContextMessages)
           .map(({ role, content }) => ({ role, content }));
 
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: history,
-            transcriptContext: fullTranscript,
-            apiKey: cfg.groqApiKey,
-            systemPrompt: cfg.chatSystemPrompt,
-            model: cfg.llmModel,
-          }),
+        await streamChatResponse({
+          messages: history,
+          transcriptContext: fullTranscript,
+          apiKey: cfg.groqApiKey,
+          systemPrompt: cfg.chatSystemPrompt,
+          model: cfg.llmModel,
+          threadContext: suggestion
+            ? {
+                suggestionType: suggestion.type,
+                suggestionTitle: suggestion.title,
+                suggestionPreview: suggestion.preview,
+              }
+            : undefined,
+          onDelta: (accumulated) => {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantMsgId ? { ...m, content: accumulated } : m))
+            );
+          },
+          onDone: () => {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantMsgId ? { ...m, isStreaming: false } : m))
+            );
+          },
+          onError: (errText) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, content: `Error: ${errText}`, isStreaming: false }
+                  : m
+              )
+            );
+          },
         });
-
-        if (!res.ok || !res.body) {
-          const errText = await res.text().catch(() => "Unknown error");
-          setChatMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId
-                ? { ...m, content: `Error: ${errText}`, isStreaming: false }
-                : m
-            )
-          );
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let accumulated = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          accumulated += decoder.decode(value, { stream: true });
-          const snapshot = accumulated;
-          setChatMessages((prev) =>
-            prev.map((m) => (m.id === assistantMsgId ? { ...m, content: snapshot } : m))
-          );
-        }
-
-        setChatMessages((prev) =>
-          prev.map((m) => (m.id === assistantMsgId ? { ...m, isStreaming: false } : m))
-        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Network error";
-        setChatMessages((prev) =>
+        setMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantMsgId ? { ...m, content: `Error: ${msg}`, isStreaming: false } : m
+            m.id === assistantMsgId
+              ? { ...m, content: `Error: ${msg}`, isStreaming: false }
+              : m
           )
         );
       } finally {
         setIsStreamingChat(false);
       }
     },
-    [isStreamingChat]
+    [isStreamingChat, threads] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  const sendChatMessage = useCallback(
+    (text: string) => sendMessage(text, { isThread: false }),
+    [sendMessage]
+  );
+
+  // ── Suggestion click → open thread ────────────────────────────────────────
   const handleSuggestionClick = useCallback(
     (suggestion: Suggestion) => {
       if (isStreamingChat) return;
 
+      // Initialize thread if first time
+      setThreads((prev) => ({
+        ...prev,
+        [suggestion.id]: prev[suggestion.id] ?? [],
+      }));
+      setActiveView(suggestion.id);
+
+      // If thread already has messages, just navigate to it
+      if (threads[suggestion.id]?.length) return;
+
+      // Mark suggestion loading
       setSuggestionBatches((prev) =>
         prev.map((batch) => ({
           ...batch,
@@ -328,7 +477,11 @@ export default function Home() {
 
       const message = `[${suggestion.type}] ${suggestion.title}\n\n${suggestion.preview}\n\nPlease provide a comprehensive, detailed answer.`;
 
-      sendChatMessage(message, suggestion.id).then(() => {
+      sendMessage(message, {
+        isThread: true,
+        suggestionId: suggestion.id,
+        suggestion,
+      }).then(() => {
         setSuggestionBatches((prev) =>
           prev.map((batch) => ({
             ...batch,
@@ -339,41 +492,90 @@ export default function Home() {
         );
       });
     },
-    [isStreamingChat, sendChatMessage]
+    [isStreamingChat, sendMessage, threads]
   );
 
-  // ── Answered suggestions ──────────────────────────────────────────────────────
+  // ── Answered suggestions set ───────────────────────────────────────────────
   const answeredSuggestionIds = useMemo<Set<string>>(
-    () =>
-      new Set(
-        chatMessages
-          .filter((m) => m.sourceSuggestionId)
-          .map((m) => m.sourceSuggestionId as string)
-      ),
-    [chatMessages]
+    () => new Set(Object.keys(threads).filter((id) => (threads[id]?.length ?? 0) > 0)),
+    [threads]
   );
 
-  // ── Export ────────────────────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      if (activeView !== "main") return;
+
+      if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        handleRefresh();
+        return;
+      }
+
+      const idx = parseInt(e.key, 10) - 1;
+      if (idx >= 0 && idx <= 2 && suggestionBatches.length > 0) {
+        e.preventDefault();
+        const latestBatch = [...suggestionBatches].reverse()[0];
+        const suggestion = latestBatch?.suggestions[idx];
+        if (suggestion) handleSuggestionClick(suggestion);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [suggestionBatches, handleRefresh, handleSuggestionClick, activeView]);
+
+  // ── Active thread suggestion lookup ───────────────────────────────────────
+  const activeThreadSuggestion = useMemo<Suggestion | undefined>(() => {
+    if (activeView === "main") return undefined;
+    return findSuggestionById(suggestionBatches, activeView);
+  }, [activeView, suggestionBatches]);
+
+  // ── Export ─────────────────────────────────────────────────────────────────
   const handleExport = useCallback(() => {
+    const allMessages: ChatMessage[] = [
+      ...chatMessages,
+      ...Object.values(threads).flat(),
+    ].sort((a, b) => a.timestamp - b.timestamp);
+
     const data: SessionExport = {
       exportedAt: new Date().toISOString(),
       durationMs: sessionStartTime ? Date.now() - sessionStartTime : 0,
       transcript: transcriptSegments,
       suggestionBatches,
-      chatHistory: chatMessages,
+      chatHistory: allMessages,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `twinmind-session-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
+    a.download = `wingman-session-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [transcriptSegments, suggestionBatches, chatMessages, sessionStartTime]);
+  }, [transcriptSegments, suggestionBatches, chatMessages, threads, sessionStartTime]);
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   const hasContent =
     transcriptSegments.length > 0 || suggestionBatches.length > 0 || chatMessages.length > 0;
+
+  const meetingBadgeColors = meetingContext
+    ? MEETING_CONTEXT_BADGE_COLORS[meetingContext.type]
+    : null;
+
+  // Active chat messages: main or thread
+  const activeChatMessages =
+    activeView === "main" ? chatMessages : (threads[activeView] ?? []);
+
+  const activeSendMessage =
+    activeView === "main"
+      ? sendChatMessage
+      : (text: string) =>
+          sendMessage(text, {
+            isThread: true,
+            suggestionId: activeView,
+            suggestion: activeThreadSuggestion,
+          });
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
@@ -385,7 +587,7 @@ export default function Home() {
               <path d="M12 1a4 4 0 014 4v7a4 4 0 01-8 0V5a4 4 0 014-4z" />
             </svg>
           </div>
-          <span className="text-sm font-semibold text-gray-900">TwinMind</span>
+          <span className="text-sm font-semibold text-gray-900">Wingman</span>
           <span className="text-xs text-gray-400 hidden sm:block">Live Suggestions</span>
         </div>
 
@@ -394,6 +596,15 @@ export default function Home() {
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 border border-red-200">
               <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
               <span className="text-xs text-red-600 font-medium">Live</span>
+            </div>
+          )}
+          {meetingContext && meetingBadgeColors && (
+            <div
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${meetingBadgeColors.bg} ${meetingBadgeColors.border}`}
+            >
+              <span className={`text-xs font-medium ${meetingBadgeColors.text}`}>
+                {meetingContext.label}
+              </span>
             </div>
           )}
           <button
@@ -445,19 +656,21 @@ export default function Home() {
             isLoading={isGeneratingSuggestions}
             onSuggestionClick={handleSuggestionClick}
             answeredSuggestionIds={answeredSuggestionIds}
+            latestBatchId={suggestionBatches[suggestionBatches.length - 1]?.id}
           />
         </div>
 
         <div className="flex-1 min-w-[280px] overflow-hidden">
           <ChatPanel
-            messages={chatMessages}
-            onSendMessage={sendChatMessage}
+            messages={activeChatMessages}
+            onSendMessage={activeSendMessage}
             isStreaming={isStreamingChat}
+            threadContext={activeThreadSuggestion}
+            onExitThread={activeView !== "main" ? () => setActiveView("main") : undefined}
           />
         </div>
       </div>
 
-      {/* Settings modal */}
       {showSettings && (
         <SettingsModal
           settings={settings}
@@ -471,11 +684,7 @@ export default function Home() {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium animate-slide-down max-w-sm pointer-events-auto ${
-              toast.type === "error"
-                ? "bg-red-600 text-white"
-                : "bg-gray-900 text-white"
-            }`}
+            className="px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium animate-slide-down max-w-sm pointer-events-auto bg-red-600 text-white"
           >
             {toast.message}
           </div>

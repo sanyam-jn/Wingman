@@ -16,6 +16,17 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
   const [testStatus, setTestStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [testError, setTestError] = useState("");
 
+  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
+    setDraft((prev) => ({ ...prev, [key]: value }));
+
+  const handleSave = () => {
+    onSave(draft);
+    onClose();
+  };
+
+  const resetPrompt = (key: "suggestionPrompt" | "chatSystemPrompt") =>
+    update(key, DEFAULT_SETTINGS[key]);
+
   const handleTestConnection = async () => {
     if (!draft.groqApiKey?.trim()) {
       setTestError("Paste your API key first");
@@ -43,29 +54,18 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
     }
   };
 
-  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
-    setDraft((prev) => ({ ...prev, [key]: value }));
-
-  const handleSave = () => {
-    onSave(draft);
-    onClose();
-  };
-
-  const resetPrompt = (key: "suggestionPrompt" | "chatSystemPrompt") => {
-    update(key, DEFAULT_SETTINGS[key]);
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Panel */}
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="text-base font-semibold text-gray-900">Settings</h2>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+          >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -74,6 +74,7 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
 
         {/* Body */}
         <div className="overflow-y-auto flex-1 px-6 py-5 space-y-6">
+
           {/* API Key */}
           <section>
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Groq API Key</h3>
@@ -102,9 +103,7 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
               </button>
             </div>
             <div className="flex items-center justify-between mt-2">
-              <p className="text-xs text-gray-400">
-                Stored locally. Never sent anywhere except directly to Groq.
-              </p>
+              <p className="text-xs text-gray-400">Stored locally. Never sent anywhere except directly to Groq.</p>
               <button
                 onClick={handleTestConnection}
                 disabled={testStatus === "loading"}
@@ -130,6 +129,7 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
               onChange={(e) => update("llmModel", e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm font-mono focus:outline-none focus:border-gray-400 focus:ring-2 focus:ring-gray-100"
             />
+            <p className="text-xs text-gray-400 mt-1.5">Used for suggestions and chat. Whisper Large V3 is always used for transcription.</p>
           </section>
 
           {/* Context Windows */}
@@ -140,9 +140,7 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
                 <span className="text-xs text-gray-600">Transcript segments for suggestions</span>
                 <div className="flex items-center gap-2">
                   <input
-                    type="range"
-                    min={1}
-                    max={20}
+                    type="range" min={1} max={20}
                     value={draft.transcriptContextSegments}
                     onChange={(e) => update("transcriptContextSegments", Number(e.target.value))}
                     className="flex-1"
@@ -155,9 +153,7 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
                 <span className="text-xs text-gray-600">Chat messages to include</span>
                 <div className="flex items-center gap-2">
                   <input
-                    type="range"
-                    min={2}
-                    max={40}
+                    type="range" min={2} max={40}
                     value={draft.chatContextMessages}
                     onChange={(e) => update("chatContextMessages", Number(e.target.value))}
                     className="flex-1"
@@ -168,17 +164,15 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
             </div>
           </section>
 
-          {/* Chunk Interval */}
+          {/* Recording */}
           <section>
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Recording</h3>
+
             <label className="space-y-1.5">
-              <span className="text-xs text-gray-600">Auto-refresh interval (seconds)</span>
+              <span className="text-xs text-gray-600">Max chunk interval (seconds)</span>
               <div className="flex items-center gap-2">
                 <input
-                  type="range"
-                  min={10}
-                  max={60}
-                  step={5}
+                  type="range" min={10} max={60} step={5}
                   value={draft.chunkIntervalMs / 1000}
                   onChange={(e) => update("chunkIntervalMs", Number(e.target.value) * 1000)}
                   className="flex-1"
@@ -186,16 +180,54 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
                 <span className="text-sm font-medium text-gray-700 w-8 text-right">{draft.chunkIntervalMs / 1000}s</span>
               </div>
             </label>
+
+            {/* VAD toggle */}
+            <div className="flex items-center justify-between mt-4">
+              <div>
+                <span className="text-xs text-gray-600 font-medium">Voice Activity Detection (VAD)</span>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Flush chunk automatically when silence is detected — faster suggestions
+                </p>
+              </div>
+              <button
+                onClick={() => update("enableVAD", !draft.enableVAD)}
+                role="switch"
+                aria-checked={draft.enableVAD}
+                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer focus:outline-none ${
+                  draft.enableVAD ? "bg-gray-900" : "bg-gray-200"
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                    draft.enableVAD ? "translate-x-4" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* VAD silence threshold */}
+            {draft.enableVAD && (
+              <label className="space-y-1.5 mt-3 block">
+                <span className="text-xs text-gray-600">Silence threshold</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range" min={500} max={3000} step={250}
+                    value={draft.vadSilenceMs}
+                    onChange={(e) => update("vadSilenceMs", Number(e.target.value))}
+                    className="flex-1"
+                  />
+                  <span className="text-sm font-medium text-gray-700 w-14 text-right">{draft.vadSilenceMs}ms</span>
+                </div>
+                <p className="text-xs text-gray-400">Silence duration before flush (min 5s chunk duration enforced)</p>
+              </label>
+            )}
           </section>
 
           {/* Suggestion Prompt */}
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Suggestions Prompt</h3>
-              <button
-                onClick={() => resetPrompt("suggestionPrompt")}
-                className="text-xs text-blue-600 hover:text-blue-800"
-              >
+              <button onClick={() => resetPrompt("suggestionPrompt")} className="text-xs text-blue-600 hover:text-blue-800">
                 Reset to default
               </button>
             </div>
@@ -211,10 +243,7 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Chat System Prompt</h3>
-              <button
-                onClick={() => resetPrompt("chatSystemPrompt")}
-                className="text-xs text-blue-600 hover:text-blue-800"
-              >
+              <button onClick={() => resetPrompt("chatSystemPrompt")} className="text-xs text-blue-600 hover:text-blue-800">
                 Reset to default
               </button>
             </div>
@@ -224,22 +253,18 @@ export default function SettingsModal({ settings, onSave, onClose }: SettingsMod
               rows={6}
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-xs font-mono leading-relaxed focus:outline-none focus:border-gray-400 focus:ring-2 focus:ring-gray-100 resize-y"
             />
-            <p className="text-xs text-gray-400 mt-1.5">Use <code className="bg-gray-100 px-1 rounded">{"{{TRANSCRIPT}}"}</code> to inject the live transcript.</p>
+            <p className="text-xs text-gray-400 mt-1.5">
+              Use <code className="bg-gray-100 px-1 rounded">{"{{TRANSCRIPT}}"}</code> to inject the live transcript.
+            </p>
           </section>
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 rounded-xl hover:bg-gray-100 transition-colors"
-          >
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 rounded-xl hover:bg-gray-100 transition-colors">
             Cancel
           </button>
-          <button
-            onClick={handleSave}
-            className="px-5 py-2 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-700 transition-colors"
-          >
+          <button onClick={handleSave} className="px-5 py-2 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-700 transition-colors">
             Save changes
           </button>
         </div>

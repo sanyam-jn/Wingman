@@ -1,4 +1,4 @@
-import type { AppSettings } from "./types";
+import type { AppSettings, MeetingContextType } from "./types";
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -22,15 +22,16 @@ Rules:
    - QUESTION → write the full follow-up question plus why it matters
    - TALKING_POINT → lead with the most valuable insight or data point
    - CLARIFICATION → define the term concisely in plain language
-4. Ground all content in the transcript. Do not hallucinate details not present or strongly implied.
-5. If the conversation is early/sparse, still generate useful, generic-but-relevant suggestions.
+4. reason: one sentence explaining WHY this suggestion was surfaced right now
+5. score: integer 1-10 for relevance and urgency (10 = extremely relevant right now)
+6. Ground all content in the transcript. Do not hallucinate details not present or strongly implied.
 
 Respond ONLY with valid JSON (no markdown, no preamble):
 {
   "suggestions": [
-    { "type": "...", "title": "...", "preview": "..." },
-    { "type": "...", "title": "...", "preview": "..." },
-    { "type": "...", "title": "...", "preview": "..." }
+    { "type": "...", "title": "...", "preview": "...", "reason": "...", "score": 8 },
+    { "type": "...", "title": "...", "preview": "...", "reason": "...", "score": 7 },
+    { "type": "...", "title": "...", "preview": "...", "reason": "...", "score": 6 }
   ]
 }`;
 
@@ -55,13 +56,48 @@ export const DEFAULT_SETTINGS: AppSettings = {
   groqApiKey: "",
   suggestionPrompt: DEFAULT_SUGGESTION_PROMPT,
   chatSystemPrompt: DEFAULT_CHAT_SYSTEM_PROMPT,
-  transcriptContextSegments: 6,  // last ~3 minutes of conversation
+  transcriptContextSegments: 6,
   chatContextMessages: 20,
   chunkIntervalMs: 30000,
   llmModel: "llama-3.3-70b-versatile",
+  enableVAD: true,
+  vadSilenceMs: 1500,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Meeting context ───────────────────────────────────────────────────────────
+
+export const MEETING_CONTEXT_LABELS: Record<MeetingContextType, string> = {
+  technical_discussion: "Technical Discussion",
+  job_interview: "Job Interview",
+  sales_call: "Sales Call",
+  brainstorm: "Brainstorm",
+  general: "General",
+};
+
+export const MEETING_CONTEXT_INSTRUCTIONS: Record<MeetingContextType, string> = {
+  technical_discussion:
+    "Prioritize technical accuracy, architecture trade-offs, code examples, and implementation details.",
+  job_interview:
+    "Prioritize answering behavioral questions using STAR format, clarifying ambiguous questions, and highlighting relevant experience.",
+  sales_call:
+    "Prioritize value propositions, objection handling, ROI framing, and clear next-step commitments.",
+  brainstorm:
+    "Prioritize creative divergence, idea expansion, 'yes and' thinking, and surfacing non-obvious angles.",
+  general: "",
+};
+
+export const MEETING_CONTEXT_BADGE_COLORS: Record<
+  MeetingContextType,
+  { bg: string; border: string; text: string }
+> = {
+  technical_discussion: { bg: "bg-violet-50", border: "border-violet-200", text: "text-violet-700" },
+  job_interview: { bg: "bg-blue-50", border: "border-blue-200", text: "text-blue-700" },
+  sales_call: { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-700" },
+  brainstorm: { bg: "bg-orange-50", border: "border-orange-200", text: "text-orange-700" },
+  general: { bg: "bg-gray-50", border: "border-gray-200", text: "text-gray-600" },
+};
+
+// ── Suggestion type metadata ──────────────────────────────────────────────────
 
 export const SUGGESTION_TYPE_META: Record<
   string,
@@ -99,14 +135,12 @@ export const SUGGESTION_TYPE_META: Record<
   },
 };
 
-export function formatTimestamp(ms: number): string {
-  const date = new Date(ms);
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-export function formatDuration(ms: number): string {
-  const totalSecs = Math.floor(ms / 1000);
-  const mins = Math.floor(totalSecs / 60);
-  const secs = totalSecs % 60;
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
+export function formatTimestamp(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }

@@ -3,7 +3,22 @@
 export interface TranscriptSegment {
   id: string;
   text: string;
-  timestamp: number; // Date.now() when segment arrived
+  timestamp: number;
+}
+
+// ── Meeting Context ───────────────────────────────────────────────────────────
+
+export type MeetingContextType =
+  | "technical_discussion"
+  | "job_interview"
+  | "sales_call"
+  | "brainstorm"
+  | "general";
+
+export interface MeetingContext {
+  type: MeetingContextType;
+  label: string;
+  confidence: number;
 }
 
 // ── Suggestions ───────────────────────────────────────────────────────────────
@@ -20,8 +35,10 @@ export interface Suggestion {
   type: SuggestionType;
   title: string;
   preview: string;
+  reason?: string;
+  score?: number;
   isLoadingAnswer: boolean;
-  answeredInChatId?: string; // ID of the chat message that answered this
+  answeredInChatId?: string;
 }
 
 export interface SuggestionBatch {
@@ -49,10 +66,12 @@ export interface AppSettings {
   groqApiKey: string;
   suggestionPrompt: string;
   chatSystemPrompt: string;
-  transcriptContextSegments: number; // # of recent segments for suggestions
-  chatContextMessages: number; // # of recent chat messages to include
+  transcriptContextSegments: number;
+  chatContextMessages: number;
   chunkIntervalMs: number;
   llmModel: string;
+  enableVAD: boolean;
+  vadSilenceMs: number;
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────
@@ -72,6 +91,7 @@ export interface SuggestionsApiRequest {
   apiKey: string;
   systemPrompt: string;
   model: string;
+  meetingContext?: MeetingContext | null;
 }
 
 export interface SuggestionsApiResponse {
@@ -79,6 +99,8 @@ export interface SuggestionsApiResponse {
     type: SuggestionType;
     title: string;
     preview: string;
+    reason?: string;
+    score?: number;
   }>;
 }
 
@@ -88,4 +110,20 @@ export interface ChatApiRequest {
   apiKey: string;
   systemPrompt: string;
   model: string;
+  threadContext?: {
+    suggestionType: SuggestionType;
+    suggestionTitle: string;
+    suggestionPreview: string;
+  };
+}
+
+export interface DetectContextApiRequest {
+  transcriptText: string;
+  apiKey: string;
+}
+
+export interface DetectContextApiResponse {
+  type: MeetingContextType;
+  label: string;
+  confidence: number;
 }

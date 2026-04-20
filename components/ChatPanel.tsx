@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ChatMessage } from "@/lib/types";
-import { formatTimestamp } from "@/lib/defaults";
+import type { ChatMessage, Suggestion } from "@/lib/types";
+import { SUGGESTION_TYPE_META, formatTimestamp } from "@/lib/defaults";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSendMessage: (text: string) => void;
   isStreaming: boolean;
+  threadContext?: Suggestion;
+  onExitThread?: () => void;
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
-
   return (
     <div className={`flex flex-col ${isUser ? "items-end" : "items-start"} animate-fade-in`}>
       <div
@@ -24,7 +25,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       >
         <div
           className={`text-sm leading-relaxed whitespace-pre-wrap ${
-            message.isStreaming ? "after:inline-block after:w-0.5 after:h-4 after:bg-gray-400 after:animate-pulse after:ml-0.5 after:align-middle" : ""
+            message.isStreaming
+              ? "after:inline-block after:w-0.5 after:h-4 after:bg-gray-400 after:animate-pulse after:ml-0.5 after:align-middle"
+              : ""
           }`}
         >
           {message.content || (message.isStreaming ? "" : "…")}
@@ -35,7 +38,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-export default function ChatPanel({ messages, onSendMessage, isStreaming }: ChatPanelProps) {
+export default function ChatPanel({
+  messages,
+  onSendMessage,
+  isStreaming,
+  threadContext,
+  onExitThread,
+}: ChatPanelProps) {
   const [inputValue, setInputValue] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -61,17 +70,48 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }: Chat
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInputValue(e.target.value);
-    // Auto-grow
     e.target.style.height = "auto";
     e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
   };
 
+  const meta = threadContext
+    ? (SUGGESTION_TYPE_META[threadContext.type] ?? SUGGESTION_TYPE_META.TALKING_POINT)
+    : null;
+
   return (
     <div className="flex flex-col h-full bg-white">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-100">
-        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Chat</h2>
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+          {threadContext ? "Thread" : "Chat"}
+        </h2>
+        {threadContext && onExitThread && (
+          <button
+            onClick={onExitThread}
+            className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-700 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+            General Chat
+          </button>
+        )}
       </div>
+
+      {/* Thread banner */}
+      {threadContext && meta && (
+        <div className={`mx-3 mt-3 mb-1 rounded-xl border px-3 py-2.5 ${meta.bgColor} ${meta.borderColor}`}>
+          <span className={`text-[10px] font-semibold uppercase tracking-wider ${meta.color}`}>
+            {meta.label}
+          </span>
+          <p className="text-sm font-semibold text-gray-800 mt-0.5 leading-snug">
+            {threadContext.title}
+          </p>
+          <p className="text-xs text-gray-600 mt-0.5 line-clamp-2 leading-relaxed">
+            {threadContext.preview}
+          </p>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
@@ -82,7 +122,9 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }: Chat
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
               </svg>
             </div>
-            <p className="text-sm text-gray-400">Click a suggestion or type a question</p>
+            <p className="text-sm text-gray-400">
+              {threadContext ? "Ask a follow-up question" : "Click a suggestion or type a question"}
+            </p>
           </div>
         ) : (
           messages.map((msg) => <MessageBubble key={msg.id} message={msg} />)
@@ -92,9 +134,13 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }: Chat
 
       {/* Input */}
       <div className="border-t border-gray-100 p-3">
-        <div className={`flex items-end gap-2 rounded-2xl border px-3 py-2 transition-colors ${
-          isStreaming ? "border-gray-100 bg-gray-50" : "border-gray-200 bg-white focus-within:border-gray-400"
-        }`}>
+        <div
+          className={`flex items-end gap-2 rounded-2xl border px-3 py-2 transition-colors ${
+            isStreaming
+              ? "border-gray-100 bg-gray-50"
+              : "border-gray-200 bg-white focus-within:border-gray-400"
+          }`}
+        >
           <textarea
             ref={textareaRef}
             value={inputValue}

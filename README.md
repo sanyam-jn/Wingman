@@ -1,6 +1,5 @@
-# TwinMind Live Suggestions
 
-A real-time AI meeting copilot that listens to your conversations and surfaces useful suggestions as you speak.
+A real-time AI meeting Wingman that listens to your conversations and surfaces useful suggestions as you speak.
 
 ## Live Demo
 

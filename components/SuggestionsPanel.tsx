@@ -8,16 +8,19 @@ interface SuggestionsPanelProps {
   isLoading: boolean;
   onSuggestionClick: (suggestion: Suggestion) => void;
   answeredSuggestionIds: Set<string>;
+  latestBatchId?: string;
 }
 
 function SuggestionCard({
   suggestion,
   onSuggestionClick,
   isAnswered,
+  keyHint,
 }: {
   suggestion: Suggestion;
   onSuggestionClick: (s: Suggestion) => void;
   isAnswered: boolean;
+  keyHint?: string;
 }) {
   const meta = SUGGESTION_TYPE_META[suggestion.type] ?? SUGGESTION_TYPE_META.TALKING_POINT;
 
@@ -37,7 +40,12 @@ function SuggestionCard({
         >
           {meta.label}
         </span>
-        <span className="shrink-0 mt-0.5">
+        <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
+          {keyHint && !isAnswered && (
+            <span className="text-[9px] font-mono text-gray-400 border border-gray-200 rounded px-1 py-0.5 leading-none">
+              {keyHint}
+            </span>
+          )}
           {suggestion.isLoadingAnswer ? (
             <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
           ) : isAnswered ? (
@@ -45,21 +53,22 @@ function SuggestionCard({
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           ) : (
-            <svg
-              className={`w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
+            <svg className="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
           )}
-        </span>
+        </div>
       </div>
 
       <h3 className="mt-2 text-sm font-semibold text-gray-800 leading-snug">{suggestion.title}</h3>
       <p className="mt-1 text-xs text-gray-600 leading-relaxed line-clamp-3">{suggestion.preview}</p>
+
+      {/* Reason — why this was surfaced */}
+      {suggestion.reason && (
+        <p className="mt-1.5 text-[11px] text-gray-400 italic leading-relaxed">
+          {suggestion.reason}
+        </p>
+      )}
     </button>
   );
 }
@@ -69,10 +78,10 @@ export default function SuggestionsPanel({
   isLoading,
   onSuggestionClick,
   answeredSuggestionIds,
+  latestBatchId,
 }: SuggestionsPanelProps) {
   return (
     <div className="flex flex-col h-full bg-gray-50">
-      {/* Header */}
       <div className="px-4 py-3 border-b border-gray-100 bg-white">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Live Suggestions</h2>
@@ -85,7 +94,6 @@ export default function SuggestionsPanel({
         </div>
       </div>
 
-      {/* Batches — newest on top */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
         {batches.length === 0 && !isLoading ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-16">
@@ -95,19 +103,21 @@ export default function SuggestionsPanel({
               </svg>
             </div>
             <p className="text-sm text-gray-400">Start recording to get suggestions</p>
-            <p className="text-xs text-gray-300 mt-1">Refreshes automatically every 30s</p>
+            <p className="text-xs text-gray-300 mt-1">Refreshes on silence or every 30s</p>
+            <p className="text-xs text-gray-300 mt-0.5">Press 1, 2, 3 to open • R to refresh</p>
           </div>
         ) : (
           [...batches].reverse().map((batch, batchIdx) => (
             <div key={batch.id} className={batchIdx === 0 ? "animate-slide-down" : ""}>
               <p className="text-[10px] text-gray-400 mb-2 px-1">{formatTimestamp(batch.createdAt)}</p>
               <div className="space-y-2">
-                {batch.suggestions.map((suggestion) => (
+                {batch.suggestions.map((suggestion, idx) => (
                   <SuggestionCard
                     key={suggestion.id}
                     suggestion={suggestion}
                     onSuggestionClick={onSuggestionClick}
                     isAnswered={answeredSuggestionIds.has(suggestion.id)}
+                    keyHint={batch.id === latestBatchId && idx < 3 ? String(idx + 1) : undefined}
                   />
                 ))}
               </div>
@@ -115,7 +125,6 @@ export default function SuggestionsPanel({
           ))
         )}
 
-        {/* Loading skeleton for first batch */}
         {isLoading && batches.length === 0 && (
           <div className="space-y-2 animate-pulse">
             {[1, 2, 3].map((i) => (
