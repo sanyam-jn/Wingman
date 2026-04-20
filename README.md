@@ -23,7 +23,7 @@ Open [http://localhost:3000](http://localhost:3000), click **Settings**, paste y
 - **Tailwind CSS**
 - **Groq SDK**
   - **Whisper Large V3** — speech-to-text transcription
-  - **llama-3.3-70b-versatile** — suggestions + chat
+  - **openai/gpt-oss-120b** — suggestions + chat
   - **llama-3.1-8b-instant** — fast meeting context classification
 - **Web Audio API / MediaRecorder** — mic capture + VAD
 - No database, no auth — single session, client-side state

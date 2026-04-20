@@ -101,7 +101,7 @@ export default function Home() {
       const raw = localStorage.getItem("twinmind-settings");
       if (raw) {
         const parsed = JSON.parse(raw);
-        const BAD_MODELS = ["meta-llama/llama-4-maverick-17b-128e-instruct"];
+        const BAD_MODELS = ["meta-llama/llama-4-maverick-17b-128e-instruct", "llama-3.3-70b-versatile"];
         if (BAD_MODELS.includes(parsed.llmModel)) parsed.llmModel = DEFAULT_SETTINGS.llmModel;
         setSettings({ ...DEFAULT_SETTINGS, ...parsed });
       }

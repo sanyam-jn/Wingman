@@ -59,7 +59,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   transcriptContextSegments: 6,
   chatContextMessages: 20,
   chunkIntervalMs: 30000,
-  llmModel: "llama-3.3-70b-versatile",
+  llmModel: "openai/gpt-oss-120b",
   enableVAD: true,
   vadSilenceMs: 1500,
 };
