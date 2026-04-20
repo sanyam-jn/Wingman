@@ -4,7 +4,7 @@ A real-time AI meeting Wingman that listens to your conversations and surfaces u
 
 ## Live Demo
 
-[Deployed URL — add after deployment]
+https://wingman-live-suggestions.vercel.app
 
 ## Quick Start
 
